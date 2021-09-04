@@ -1,4 +1,4 @@
-# Modifications of the Ethereum client OpenEthereum
+# Modifications of the Ethereum client [OpenEthereum](https://github.com/openethereum/openethereum)
 
 ## Distinuishing between `create` and `create2` messages in traces
 
