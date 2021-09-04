@@ -1,0 +1,1670 @@
+diff --git a/bin/evmbin/src/main.rs b/bin/evmbin/src/main.rs
+index 343f5118b..1d2d50a64 100644
+--- a/bin/evmbin/src/main.rs
++++ b/bin/evmbin/src/main.rs
+@@ -50,7 +50,7 @@ use ethjson::spec::ForkSpec;
+ use evm::EnvInfo;
+ use rustc_hex::FromHex;
+ use std::{fmt, fs, path::PathBuf, sync::Arc};
+-use vm::{ActionParams, CallType};
++use vm::{ActionParams, ActionType};
+ 
+ mod display;
+ mod info;
+@@ -312,9 +312,9 @@ fn run_call<T: Informant>(args: Args, informant: T) {
+     }
+ 
+     params.call_type = if code.is_none() {
+-        CallType::Call
++        ActionType::Call
+     } else {
+-        CallType::None
++        ActionType::Create
+     };
+     params.code_address = to;
+     params.address = to;
+diff --git a/crates/ethcore/src/engines/mod.rs b/crates/ethcore/src/engines/mod.rs
+index c96284179..c4d2cb2e7 100644
+--- a/crates/ethcore/src/engines/mod.rs
++++ b/crates/ethcore/src/engines/mod.rs
+@@ -56,7 +56,7 @@ use types::{
+     transaction::{self, SignedTransaction, UnverifiedTransaction},
+     BlockNumber,
+ };
+-use vm::{ActionValue, CallType, CreateContractAddress, EnvInfo, Schedule};
++use vm::{ActionValue, ActionType, CreateContractAddress, EnvInfo, Schedule};
+ 
+ use block::ExecutedBlock;
+ use bytes::Bytes;
+@@ -235,7 +235,7 @@ pub fn default_system_or_code_call<'a>(
+                 Some(ActionValue::Apparent(U256::zero())),
+                 U256::max_value(),
+                 Some(data),
+-                Some(CallType::StaticCall),
++                Some(ActionType::StaticCall),
+             ),
+         };
+ 
+diff --git a/crates/ethcore/src/executive.rs b/crates/ethcore/src/executive.rs
+index 0ddbc6fc9..f185a9455 100644
+--- a/crates/ethcore/src/executive.rs
++++ b/crates/ethcore/src/executive.rs
+@@ -17,7 +17,7 @@
+ //! Transaction Execution environment.
+ use bytes::{Bytes, BytesRef};
+ use ethereum_types::{Address, H256, U256, U512};
+-use evm::{CallType, FinalizationResult, Finalize};
++use evm::{ActionType, FinalizationResult, Finalize};
+ use executed::ExecutionError;
+ pub use executed::{Executed, ExecutionResult};
+ use externalities::*;
+@@ -265,7 +265,7 @@ impl<'a> CallCreateExecutive<'a> {
+         );
+ 
+         let gas = params.gas;
+-        let static_flag = parent_static_flag || params.call_type == CallType::StaticCall;
++        let static_flag = parent_static_flag || params.call_type == ActionType::StaticCall;
+ 
+         // if destination is builtin, try to execute it
+         let kind = if let Some(builtin) = machine.builtin(&params.code_address, info.number) {
+@@ -363,7 +363,7 @@ impl<'a> CallCreateExecutive<'a> {
+             }
+         } else {
+             if (static_flag
+-                && (params.call_type == CallType::StaticCall || params.call_type == CallType::Call))
++                && (params.call_type == ActionType::StaticCall || params.call_type == ActionType::Call))
+                 && params.value.value() > U256::zero()
+             {
+                 return Err(vm::Error::MutableCallInStaticContext);
+@@ -1271,7 +1271,7 @@ impl<'a, B: 'a + StateBackend> Executive<'a, B> {
+                     value: ActionValue::Transfer(t.tx().value),
+                     code: Some(Arc::new(t.tx().data.clone())),
+                     data: None,
+-                    call_type: CallType::None,
++                    call_type: ActionType::Create,
+                     params_type: vm::ParamsType::Embedded,
+                     access_list: access_list,
+                 };
+@@ -1295,7 +1295,7 @@ impl<'a, B: 'a + StateBackend> Executive<'a, B> {
+                     code: self.state.code(address)?,
+                     code_hash: self.state.code_hash(address)?,
+                     data: Some(t.tx().data.clone()),
+-                    call_type: CallType::Call,
++                    call_type: ActionType::Call,
+                     params_type: vm::ParamsType::Separate,
+                     access_list: access_list,
+                 };
+@@ -1630,7 +1630,7 @@ mod tests {
+     use types::transaction::{
+         AccessListTx, Action, EIP1559TransactionTx, Transaction, TypedTransaction,
+     };
+-    use vm::{ActionParams, ActionValue, CallType, CreateContractAddress, EnvInfo};
++    use vm::{ActionParams, ActionValue, ActionType, CreateContractAddress, EnvInfo};
+ 
+     fn make_frontier_machine(max_depth: usize) -> EthereumMachine {
+         let mut machine = ::ethereum::new_frontier_test_machine();
+@@ -1799,7 +1799,7 @@ mod tests {
+         params.gas = U256::from(100_000);
+         params.code = Some(Arc::new(code));
+         params.value = ActionValue::Transfer(U256::from(100));
+-        params.call_type = CallType::Call;
++        params.call_type = ActionType::Call;
+         let mut state = get_temp_state();
+         state
+             .add_balance(&sender, &U256::from(100), CleanupMode::NoEmpty)
+@@ -1825,7 +1825,7 @@ mod tests {
+                         value: 100.into(),
+                         gas: 100_000.into(),
+                         input: vec![],
+-                        call_type: CallType::Call
++                        call_type: Some(trace::CallType::Call).into(),
+                     }),
+                     result: trace::Res::Call(trace::CallResult {
+                         gas_used: 33021.into(),
+@@ -1841,7 +1841,7 @@ mod tests {
+                         value: 1.into(),
+                         gas: 66560.into(),
+                         input: vec![],
+-                        call_type: CallType::Call
++                        call_type: Some(trace::CallType::Call).into(),
+                     }),
+                     result: trace::Res::Call(trace::CallResult {
+                         gas_used: 600.into(),
+@@ -1902,7 +1902,7 @@ mod tests {
+         params.gas = U256::from(100_000);
+         params.code = Some(Arc::new(code));
+         params.value = ActionValue::Transfer(U256::from(100));
+-        params.call_type = CallType::Call;
++        params.call_type = ActionType::Call;
+         let mut state = get_temp_state();
+         state
+             .add_balance(&sender, &U256::from(100), CleanupMode::NoEmpty)
+@@ -1932,7 +1932,7 @@ mod tests {
+                     value: 100.into(),
+                     gas: 100000.into(),
+                     input: vec![],
+-                    call_type: CallType::Call,
++                    call_type: Some(trace::CallType::Call).into(),
+                 }),
+                 result: trace::Res::Call(trace::CallResult {
+                     gas_used: U256::from(55_248),
+@@ -1950,6 +1950,7 @@ mod tests {
+                         96, 16, 128, 96, 12, 96, 0, 57, 96, 0, 243, 0, 96, 0, 53, 84, 21, 96, 9,
+                         87, 0, 91, 96, 32, 53, 96, 0, 53, 85,
+                     ],
++                    creation_method: Some(trace::CreationMethod::Create),
+                 }),
+                 result: trace::Res::Create(trace::CreateResult {
+                     gas_used: U256::from(3224),
+@@ -2033,7 +2034,7 @@ mod tests {
+         params.gas = U256::from(100_000);
+         params.code = Some(Arc::new(code));
+         params.value = ActionValue::Transfer(U256::from(100));
+-        params.call_type = CallType::Call;
++        params.call_type = ActionType::Call;
+         let mut state = get_temp_state();
+         state
+             .add_balance(&sender, &U256::from(100), CleanupMode::NoEmpty)
+@@ -2063,7 +2064,7 @@ mod tests {
+                     value: 100.into(),
+                     gas: 100_000.into(),
+                     input: vec![],
+-                    call_type: CallType::Call,
++                    call_type: Some(trace::CallType::Call).into(),
+                 }),
+                 result: trace::Res::Call(trace::CallResult {
+                     gas_used: U256::from(37_033),
+@@ -2078,6 +2079,7 @@ mod tests {
+                     value: 23.into(),
+                     gas: 66_917.into(),
+                     init: vec![0x60, 0x01, 0x60, 0x00, 0xfd],
++                    creation_method: Some(trace::CreationMethod::Create),
+                 }),
+                 result: trace::Res::FailedCreate(vm::Error::Reverted.into()),
+             },
+@@ -2150,6 +2152,7 @@ mod tests {
+                     96, 16, 128, 96, 12, 96, 0, 57, 96, 0, 243, 0, 96, 0, 53, 84, 21, 96, 9, 87, 0,
+                     91, 96, 32, 53, 96, 0, 53, 85,
+                 ],
++                creation_method: Some(trace::CreationMethod::Create),
+             }),
+             result: trace::Res::Create(trace::CreateResult {
+                 gas_used: U256::from(3224),
+diff --git a/crates/ethcore/src/externalities.rs b/crates/ethcore/src/externalities.rs
+index efcdfcefe..44f2b3771 100644
+--- a/crates/ethcore/src/externalities.rs
++++ b/crates/ethcore/src/externalities.rs
+@@ -24,7 +24,7 @@ use std::{cmp, sync::Arc};
+ use trace::{Tracer, VMTracer};
+ use types::transaction::UNSIGNED_SENDER;
+ use vm::{
+-    self, AccessList, ActionParams, ActionValue, CallType, ContractCreateResult,
++    self, AccessList, ActionParams, ActionValue, ActionType, ContractCreateResult,
+     CreateContractAddress, EnvInfo, Ext, MessageCallResult, ReturnData, Schedule, TrapKind,
+ };
+ 
+@@ -200,7 +200,7 @@ where
+                 code: code,
+                 code_hash: code_hash,
+                 data: Some(data.as_bytes().to_vec()),
+-                call_type: CallType::Call,
++                call_type: ActionType::Call,
+                 params_type: vm::ParamsType::Separate,
+                 access_list: AccessList::default(),
+             };
+@@ -234,10 +234,8 @@ where
+                     let index = self.env_info.number - number.low_u64() - 1;
+                     assert!(
+                         index < self.env_info.last_hashes.len() as u64,
+-                        format!(
+-                            "Inconsistent env_info, should contain at least {:?} last hashes",
+-                            index + 1
+-                        )
++                        "Inconsistent env_info, should contain at least {:?} last hashes",
++                        index + 1
+                     );
+                     let r = self.env_info.last_hashes[index as usize].clone();
+                     trace!(
+@@ -277,6 +275,12 @@ where
+             }
+         };
+ 
++        let create_type = match address_scheme {
++            CreateContractAddress::FromSenderAndNonce => ActionType::Create,
++            CreateContractAddress::FromSenderSaltAndCodeHash(_) => ActionType::Create2,
++            CreateContractAddress::FromSenderAndCodeHash => ActionType::Create2,
++        };
++
+         // prepare the params
+         let params = ActionParams {
+             code_address: address.clone(),
+@@ -289,7 +293,7 @@ where
+             code: Some(Arc::new(code.to_vec())),
+             code_hash: code_hash,
+             data: None,
+-            call_type: CallType::None,
++            call_type: create_type,
+             params_type: vm::ParamsType::Embedded,
+             access_list: self.substate.access_list.clone(),
+         };
+@@ -343,7 +347,7 @@ where
+         value: Option<U256>,
+         data: &[u8],
+         code_address: &Address,
+-        call_type: CallType,
++        call_type: ActionType,
+         trap: bool,
+     ) -> ::std::result::Result<MessageCallResult, TrapKind> {
+         trace!(target: "externalities", "call");
+@@ -564,7 +568,7 @@ where
+ mod tests {
+     use super::*;
+     use ethereum_types::{Address, U256};
+-    use evm::{CallType, EnvInfo, Ext};
++    use evm::{ActionType, EnvInfo, Ext};
+     use state::{State, Substate};
+     use std::str::FromStr;
+     use test_helpers::get_temp_state;
+@@ -761,7 +765,7 @@ mod tests {
+             ),
+             &[],
+             &Address::default(),
+-            CallType::Call,
++            ActionType::Call,
+             false,
+         )
+         .ok()
+diff --git a/crates/ethcore/src/json_tests/executive.rs b/crates/ethcore/src/json_tests/executive.rs
+index ffd20e935..927cce5e4 100644
+--- a/crates/ethcore/src/json_tests/executive.rs
++++ b/crates/ethcore/src/json_tests/executive.rs
+@@ -30,7 +30,7 @@ use std::{path::Path, sync::Arc};
+ use test_helpers::get_temp_state;
+ use trace::{NoopTracer, NoopVMTracer, Tracer, VMTracer};
+ use vm::{
+-    self, ActionParams, CallType, ContractCreateResult, CreateContractAddress, EnvInfo, Ext,
++    self, ActionParams, ActionType, ContractCreateResult, CreateContractAddress, EnvInfo, Ext,
+     MessageCallResult, ReturnData, Schedule,
+ };
+ 
+@@ -180,7 +180,7 @@ where
+         value: Option<U256>,
+         data: &[u8],
+         _code_address: &Address,
+-        _call_type: CallType,
++        _call_type: ActionType,
+         _trap: bool,
+     ) -> Result<MessageCallResult, vm::TrapKind> {
+         self.callcreates.push(CallCreate {
+diff --git a/crates/ethcore/src/machine/impls.rs b/crates/ethcore/src/machine/impls.rs
+index 1f0a6464c..9db6dd9c1 100644
+--- a/crates/ethcore/src/machine/impls.rs
++++ b/crates/ethcore/src/machine/impls.rs
+@@ -32,7 +32,7 @@ use types::{
+     BlockNumber,
+ };
+ use vm::{
+-    AccessList, ActionParams, ActionValue, CallType, CreateContractAddress, EnvInfo, ParamsType,
++    AccessList, ActionParams, ActionValue, ActionType, CreateContractAddress, EnvInfo, ParamsType,
+     Schedule,
+ };
+ 
+@@ -176,7 +176,7 @@ impl EthereumMachine {
+         value: Option<ActionValue>,
+         gas: U256,
+         data: Option<Vec<u8>>,
+-        call_type: Option<CallType>,
++        call_type: Option<ActionType>,
+     ) -> Result<Vec<u8>, Error> {
+         let env_info = {
+             let mut env_info = block.env_info();
+@@ -197,7 +197,7 @@ impl EthereumMachine {
+             code,
+             code_hash,
+             data,
+-            call_type: call_type.unwrap_or(CallType::Call),
++            call_type: call_type.unwrap_or(ActionType::Call),
+             params_type: ParamsType::Separate,
+             access_list: AccessList::default(),
+         };
+diff --git a/crates/ethcore/src/spec/spec.rs b/crates/ethcore/src/spec/spec.rs
+index ae3e7acbb..df02fd1f3 100644
+--- a/crates/ethcore/src/spec/spec.rs
++++ b/crates/ethcore/src/spec/spec.rs
+@@ -32,7 +32,7 @@ use parking_lot::RwLock;
+ use rlp::{Rlp, RlpStream};
+ use rustc_hex::FromHex;
+ use types::{header::Header, BlockNumber};
+-use vm::{AccessList, ActionParams, ActionValue, CallType, EnvInfo, ParamsType};
++use vm::{AccessList, ActionParams, ActionValue, ActionType, EnvInfo, ParamsType};
+ 
+ use builtin::Builtin;
+ use engines::{
+@@ -850,7 +850,7 @@ impl Spec {
+                         value: ActionValue::Transfer(Default::default()),
+                         code: Some(Arc::new(constructor.clone())),
+                         data: None,
+-                        call_type: CallType::None,
++                        call_type: ActionType::Create,
+                         params_type: ParamsType::Embedded,
+                         access_list: AccessList::default(),
+                     };
+diff --git a/crates/ethcore/src/state/mod.rs b/crates/ethcore/src/state/mod.rs
+index 2617412c2..48a6e3527 100644
+--- a/crates/ethcore/src/state/mod.rs
++++ b/crates/ethcore/src/state/mod.rs
+@@ -1576,7 +1576,6 @@ mod tests {
+     use super::*;
+     use crypto::publickey::Secret;
+     use ethereum_types::{Address, BigEndianHash, H256, U256};
+-    use evm::CallType;
+     use hash::{keccak, KECCAK_NULL_RLP};
+     use machine::EthereumMachine;
+     use rustc_hex::FromHex;
+@@ -1633,6 +1632,7 @@ mod tests {
+                     96, 16, 128, 96, 12, 96, 0, 57, 96, 0, 243, 0, 96, 0, 53, 84, 21, 96, 9, 87, 0,
+                     91, 96, 32, 53, 96, 0, 53, 85,
+                 ],
++                creation_method: Some(trace::CreationMethod::Create),
+             }),
+             result: trace::Res::Create(trace::CreateResult {
+                 gas_used: U256::from(3224),
+@@ -1693,6 +1693,7 @@ mod tests {
+                 value: 100.into(),
+                 gas: 78792.into(),
+                 init: vec![91, 96, 0, 86],
++                creation_method: Some(trace::CreationMethod::Create),
+             }),
+             result: trace::Res::FailedCreate(TraceError::OutOfGas),
+             subtraces: 0,
+@@ -1739,7 +1740,7 @@ mod tests {
+                 value: 100.into(),
+                 gas: 79000.into(),
+                 input: vec![],
+-                call_type: CallType::Call,
++                call_type: Some(trace::CallType::Call).into(),
+             }),
+             result: trace::Res::Call(trace::CallResult {
+                 gas_used: U256::from(3),
+@@ -1783,7 +1784,7 @@ mod tests {
+                 value: 100.into(),
+                 gas: 79000.into(),
+                 input: vec![],
+-                call_type: CallType::Call,
++                call_type: Some(trace::CallType::Call).into(),
+             }),
+             result: trace::Res::Call(trace::CallResult {
+                 gas_used: U256::from(0),
+@@ -1825,7 +1826,7 @@ mod tests {
+                 value: 0.into(),
+                 gas: 79_000.into(),
+                 input: vec![],
+-                call_type: CallType::Call,
++                call_type: Some(trace::CallType::Call).into(),
+             }),
+             result: trace::Res::Call(trace::CallResult {
+                 gas_used: U256::from(3000),
+@@ -1873,7 +1874,7 @@ mod tests {
+                 value: 0.into(),
+                 gas: 79000.into(),
+                 input: vec![],
+-                call_type: CallType::Call,
++                call_type: Some(trace::CallType::Call).into(),
+             }),
+             result: trace::Res::Call(trace::CallResult {
+                 gas_used: U256::from(3_721), // in post-eip150
+@@ -1929,7 +1930,7 @@ mod tests {
+                     value: 0.into(),
+                     gas: 79000.into(),
+                     input: vec![],
+-                    call_type: CallType::Call,
++                    call_type: Some(trace::CallType::Call).into(),
+                 }),
+                 result: trace::Res::Call(trace::CallResult {
+                     gas_used: 724.into(), // in post-eip150
+@@ -1945,7 +1946,7 @@ mod tests {
+                     value: 0.into(),
+                     gas: 4096.into(),
+                     input: vec![],
+-                    call_type: CallType::CallCode,
++                    call_type: Some(trace::CallType::CallCode).into(),
+                 }),
+                 result: trace::Res::Call(trace::CallResult {
+                     gas_used: 3.into(),
+@@ -2002,7 +2003,7 @@ mod tests {
+                     value: 0.into(),
+                     gas: 79000.into(),
+                     input: vec![],
+-                    call_type: CallType::Call,
++                    call_type: Some(trace::CallType::Call).into(),
+                 }),
+                 result: trace::Res::Call(trace::CallResult {
+                     gas_used: U256::from(736), // in post-eip150
+@@ -2018,7 +2019,7 @@ mod tests {
+                     value: 0.into(),
+                     gas: 32768.into(),
+                     input: vec![],
+-                    call_type: CallType::DelegateCall,
++                    call_type: Some(trace::CallType::DelegateCall).into(),
+                 }),
+                 result: trace::Res::Call(trace::CallResult {
+                     gas_used: 18.into(),
+@@ -2068,7 +2069,7 @@ mod tests {
+                 value: 100.into(),
+                 gas: 79000.into(),
+                 input: vec![],
+-                call_type: CallType::Call,
++                call_type: Some(trace::CallType::Call).into(),
+             }),
+             result: trace::Res::FailedCall(TraceError::OutOfGas),
+             subtraces: 0,
+@@ -2124,7 +2125,7 @@ mod tests {
+                     value: 100.into(),
+                     gas: 79000.into(),
+                     input: vec![],
+-                    call_type: CallType::Call,
++                    call_type: Some(trace::CallType::Call).into(),
+                 }),
+                 result: trace::Res::Call(trace::CallResult {
+                     gas_used: U256::from(69),
+@@ -2140,7 +2141,7 @@ mod tests {
+                     value: 0.into(),
+                     gas: 78934.into(),
+                     input: vec![],
+-                    call_type: CallType::Call,
++                    call_type: Some(trace::CallType::Call).into(),
+                 }),
+                 result: trace::Res::Call(trace::CallResult {
+                     gas_used: U256::from(3),
+@@ -2192,7 +2193,7 @@ mod tests {
+                     value: 100.into(),
+                     gas: 79000.into(),
+                     input: vec![],
+-                    call_type: CallType::Call,
++                    call_type: Some(trace::CallType::Call).into(),
+                 }),
+                 result: trace::Res::Call(trace::CallResult {
+                     gas_used: U256::from(31761),
+@@ -2208,7 +2209,7 @@ mod tests {
+                     value: 69.into(),
+                     gas: 2300.into(),
+                     input: vec![],
+-                    call_type: CallType::Call,
++                    call_type: Some(trace::CallType::Call).into(),
+                 }),
+                 result: trace::Res::Call(trace::CallResult::default()),
+             },
+@@ -2256,7 +2257,7 @@ mod tests {
+                 value: 100.into(),
+                 gas: 79000.into(),
+                 input: vec![],
+-                call_type: CallType::Call,
++                call_type: Some(trace::CallType::Call).into(),
+             }),
+             result: trace::Res::Call(trace::CallResult {
+                 gas_used: U256::from(31761),
+@@ -2313,7 +2314,7 @@ mod tests {
+                     value: 100.into(),
+                     gas: 79000.into(),
+                     input: vec![],
+-                    call_type: CallType::Call,
++                    call_type: Some(trace::CallType::Call).into(),
+                 }),
+                 result: trace::Res::Call(trace::CallResult {
+                     gas_used: U256::from(79_000),
+@@ -2329,7 +2330,7 @@ mod tests {
+                     value: 0.into(),
+                     gas: 78934.into(),
+                     input: vec![],
+-                    call_type: CallType::Call,
++                    call_type: Some(trace::CallType::Call).into(),
+                 }),
+                 result: trace::Res::FailedCall(TraceError::OutOfGas),
+             },
+@@ -2390,7 +2391,7 @@ mod tests {
+                     value: 100.into(),
+                     gas: 79000.into(),
+                     input: vec![],
+-                    call_type: CallType::Call,
++                    call_type: Some(trace::CallType::Call).into(),
+                 }),
+                 result: trace::Res::Call(trace::CallResult {
+                     gas_used: U256::from(135),
+@@ -2406,7 +2407,7 @@ mod tests {
+                     value: 0.into(),
+                     gas: 78934.into(),
+                     input: vec![],
+-                    call_type: CallType::Call,
++                    call_type: Some(trace::CallType::Call).into(),
+                 }),
+                 result: trace::Res::Call(trace::CallResult {
+                     gas_used: U256::from(69),
+@@ -2422,7 +2423,7 @@ mod tests {
+                     value: 0.into(),
+                     gas: 78868.into(),
+                     input: vec![],
+-                    call_type: CallType::Call,
++                    call_type: Some(trace::CallType::Call).into(),
+                 }),
+                 result: trace::Res::Call(trace::CallResult {
+                     gas_used: U256::from(3),
+@@ -2487,7 +2488,7 @@ mod tests {
+                     value: 100.into(),
+                     gas: 79000.into(),
+                     input: vec![],
+-                    call_type: CallType::Call,
++                    call_type: Some(trace::CallType::Call).into(),
+                 }),
+                 result: trace::Res::Call(trace::CallResult {
+                     gas_used: U256::from(79_000),
+@@ -2503,7 +2504,7 @@ mod tests {
+                     value: 0.into(),
+                     gas: 78934.into(),
+                     input: vec![],
+-                    call_type: CallType::Call,
++                    call_type: Some(trace::CallType::Call).into(),
+                 }),
+                 result: trace::Res::FailedCall(TraceError::OutOfGas),
+             },
+@@ -2515,7 +2516,7 @@ mod tests {
+                     to: Address::from_low_u64_be(0xc),
+                     value: 0.into(),
+                     gas: 78868.into(),
+-                    call_type: CallType::Call,
++                    call_type: Some(trace::CallType::Call).into(),
+                     input: vec![],
+                 }),
+                 result: trace::Res::Call(trace::CallResult {
+@@ -2575,7 +2576,7 @@ mod tests {
+                     value: 100.into(),
+                     gas: 79000.into(),
+                     input: vec![],
+-                    call_type: CallType::Call,
++                    call_type: Some(trace::CallType::Call).into(),
+                 }),
+                 result: trace::Res::Call(trace::CallResult {
+                     gas_used: 3.into(),
+diff --git a/crates/ethcore/src/tests/evm.rs b/crates/ethcore/src/tests/evm.rs
+index b8e1f5c21..e5352438c 100644
+--- a/crates/ethcore/src/tests/evm.rs
++++ b/crates/ethcore/src/tests/evm.rs
+@@ -24,7 +24,7 @@ use std::sync::Arc;
+ use test_helpers::get_temp_state_with_factory;
+ use trace::{NoopTracer, NoopVMTracer};
+ use types::transaction::SYSTEM_ADDRESS;
+-use vm::{AccessList, ActionParams, ActionValue, CallType, EnvInfo, ParamsType};
++use vm::{AccessList, ActionParams, ActionValue, ActionType, EnvInfo, ParamsType};
+ 
+ use rustc_hex::FromHex;
+ 
+@@ -60,7 +60,7 @@ fn test_blockhash_eip210(factory: Factory) {
+             code: Some(blockhash_contract_code.clone()),
+             code_hash: Some(blockhash_contract_code_hash),
+             data: Some(H256::from_low_u64_be(i - 1).as_bytes().to_vec()),
+-            call_type: CallType::Call,
++            call_type: ActionType::Call,
+             params_type: ParamsType::Separate,
+             access_list: AccessList::default(),
+         };
+@@ -84,7 +84,7 @@ fn test_blockhash_eip210(factory: Factory) {
+         code: Some(get_prev_hash_code),
+         code_hash: Some(get_prev_hash_code_hash),
+         data: None,
+-        call_type: CallType::Call,
++        call_type: ActionType::Call,
+         params_type: ParamsType::Separate,
+         access_list: AccessList::default(),
+     };
+diff --git a/crates/ethcore/src/trace/db.rs b/crates/ethcore/src/trace/db.rs
+index 33ca541f2..eb4fbc92f 100644
+--- a/crates/ethcore/src/trace/db.rs
++++ b/crates/ethcore/src/trace/db.rs
+@@ -407,13 +407,12 @@ where
+ #[cfg(test)]
+ mod tests {
+     use ethereum_types::{Address, H256, U256};
+-    use evm::CallType;
+     use kvdb::DBTransaction;
+     use std::{collections::HashMap, sync::Arc};
+     use test_helpers::new_db;
+     use trace::{
+         flat::{FlatBlockTraces, FlatTrace, FlatTransactionTraces},
+-        trace::{Action, Call, Res},
++        trace::{Action, Call, CallType,Res},
+         AddressesFilter, Config, Database as TraceDatabase, DatabaseExtras, Filter, ImportRequest,
+         LocalizedTrace, TraceDB, TraceError,
+     };
+@@ -505,7 +504,7 @@ mod tests {
+                     value: 3.into(),
+                     gas: 4.into(),
+                     input: vec![],
+-                    call_type: CallType::Call,
++                    call_type: Some(CallType::Call).into(),
+                 }),
+                 result: Res::FailedCall(TraceError::OutOfGas),
+             }])]),
+@@ -530,7 +529,7 @@ mod tests {
+                     value: 3.into(),
+                     gas: 4.into(),
+                     input: vec![],
+-                    call_type: CallType::Call,
++                    call_type: Some(CallType::Call).into(),
+                 }),
+                 result: Res::FailedCall(TraceError::OutOfGas),
+             }])]),
+@@ -553,7 +552,7 @@ mod tests {
+                 value: U256::from(3),
+                 gas: U256::from(4),
+                 input: vec![],
+-                call_type: CallType::Call,
++                call_type: Some(CallType::Call).into(),
+             }),
+             result: Res::FailedCall(TraceError::OutOfGas),
+             trace_address: vec![],
+diff --git a/crates/ethcore/src/trace/types/filter.rs b/crates/ethcore/src/trace/types/filter.rs
+index fe1bbf291..774b31ce6 100644
+--- a/crates/ethcore/src/trace/types/filter.rs
++++ b/crates/ethcore/src/trace/types/filter.rs
+@@ -133,10 +133,9 @@ impl Filter {
+ #[cfg(test)]
+ mod tests {
+     use ethereum_types::{Address, Bloom, BloomInput};
+-    use evm::CallType;
+     use trace::{
+         flat::FlatTrace,
+-        trace::{Action, Call, Create, CreateResult, Res, Reward, Suicide},
++        trace::{Action, Call, CallType, Create, CreationMethod, CreateResult, Res, Reward, Suicide},
+         AddressesFilter, Filter, RewardType, TraceError,
+     };
+ 
+@@ -296,7 +295,7 @@ mod tests {
+                 value: 3.into(),
+                 gas: 4.into(),
+                 input: vec![0x5],
+-                call_type: CallType::Call,
++                call_type: Some(CallType::Call).into(),
+             }),
+             result: Res::FailedCall(TraceError::OutOfGas),
+             trace_address: vec![0].into_iter().collect(),
+@@ -317,6 +316,7 @@ mod tests {
+                 value: 3.into(),
+                 gas: 4.into(),
+                 init: vec![0x5],
++                creation_method: Some(CreationMethod::Create),
+             }),
+             result: Res::Create(CreateResult {
+                 gas_used: 10.into(),
+@@ -436,6 +436,7 @@ mod tests {
+                 gas: 4.into(),
+                 init: vec![0x5],
+                 value: 3.into(),
++                creation_method: Some(CreationMethod::Create),
+             }),
+             result: Res::FailedCall(TraceError::BadInstruction),
+             trace_address: vec![].into_iter().collect(),
+diff --git a/crates/ethcore/src/trace/types/flat.rs b/crates/ethcore/src/trace/types/flat.rs
+index a165e2e91..d5038f6d3 100644
+--- a/crates/ethcore/src/trace/types/flat.rs
++++ b/crates/ethcore/src/trace/types/flat.rs
+@@ -126,10 +126,9 @@ impl Into<Vec<FlatTransactionTraces>> for FlatBlockTraces {
+ #[cfg(test)]
+ mod tests {
+     use super::{FlatBlockTraces, FlatTrace, FlatTransactionTraces};
+-    use evm::CallType;
+     use rlp::*;
+     use trace::{
+-        trace::{Action, Call, CallResult, Res, Reward, Suicide},
++        trace::{Action, Call, CallType, CallResult, Res, Reward, Suicide},
+         RewardType,
+     };
+ 
+@@ -168,7 +167,7 @@ mod tests {
+                 value: "3627e8f712373c0000".parse().unwrap(),
+                 gas: 0x03e8.into(),
+                 input: vec![],
+-                call_type: CallType::Call,
++                call_type: Some(CallType::Call).into(),
+             }),
+             result: Res::Call(CallResult {
+                 gas_used: 0.into(),
+@@ -185,7 +184,7 @@ mod tests {
+                 value: 0.into(),
+                 gas: 0x010c78.into(),
+                 input: vec![0x41, 0xc0, 0xe1, 0xb5],
+-                call_type: CallType::Call,
++                call_type: Some(CallType::Call).into(),
+             }),
+             result: Res::Call(CallResult {
+                 gas_used: 0x0127.into(),
+diff --git a/crates/ethcore/src/trace/types/trace.rs b/crates/ethcore/src/trace/types/trace.rs
+index 02034f513..682f5e894 100644
+--- a/crates/ethcore/src/trace/types/trace.rs
++++ b/crates/ethcore/src/trace/types/trace.rs
+@@ -16,12 +16,19 @@
+ 
+ //! Tracing datatypes.
+ 
++// ================== NOTE ========================
++// IF YOU'RE ADDING A FIELD TO A STRUCT WITH
++// RLP ENCODING, MAKE SURE IT'S DONE IN A BACKWARDS
++// COMPATIBLE WAY!
++// ================== NOTE ========================
++
++use std::convert::TryFrom;
+ use bytes::Bytes;
+ use ethereum_types::{Address, Bloom, BloomInput, U256};
+ use rlp::{Decodable, DecoderError, Encodable, Rlp, RlpStream};
+-
++use rlp_derive::{RlpEncodable, RlpDecodable};
+ use super::error::Error;
+-use evm::CallType;
++use evm::ActionType;
+ use vm::ActionParams;
+ 
+ /// `Call` result.
+@@ -33,6 +40,33 @@ pub struct CallResult {
+     pub output: Bytes,
+ }
+ 
++/// `Call` type. Distinguish between different types of contract interactions.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub enum CallType {
++    /// Call
++    Call,
++    /// Call code
++    CallCode,
++    /// Delegate call
++    DelegateCall,
++    /// Static call
++    StaticCall,
++}
++
++impl TryFrom<ActionType> for CallType {
++    type Error = &'static str;
++    fn try_from(action_type: ActionType) -> Result<Self, Self::Error> {
++        match action_type {
++            ActionType::Call => Ok(CallType::Call),
++            ActionType::CallCode => Ok(CallType::CallCode),
++            ActionType::DelegateCall => Ok(CallType::DelegateCall),
++            ActionType::StaticCall => Ok(CallType::StaticCall),
++            ActionType::Create => Err("Create cannot be converted to CallType"),
++            ActionType::Create2 => Err("Create2 cannot be converted to CallType"),
++        }
++    }
++}
++
+ /// `Create` result.
+ #[derive(Debug, Clone, PartialEq, RlpEncodable, RlpDecodable)]
+ pub struct CreateResult {
+@@ -51,6 +85,50 @@ impl CreateResult {
+     }
+ }
+ 
++/// `Create` method. Distinguish between use of `CREATE` and `CREATE2` opcodes in an action.
++#[derive(Debug, Clone, PartialEq)]
++pub enum CreationMethod {
++    /// Create
++    Create,
++    /// Create2
++    Create2,
++}
++
++
++impl TryFrom<ActionType> for CreationMethod {
++    type Error = &'static str;
++    fn try_from(action_type: ActionType) -> Result<Self, Self::Error> {
++        match action_type {
++            ActionType::Call => Err("Call cannot be converted to CreationMethod"),
++            ActionType::CallCode => Err("CallCode cannot be converted to CreationMethod"),
++            ActionType::DelegateCall => Err("DelegateCall cannot be converted to CreationMethod"),
++            ActionType::StaticCall => Err("StaticCall cannot be converted to CreationMethod"),
++            ActionType::Create => Ok(CreationMethod::Create),
++            ActionType::Create2 => Ok(CreationMethod::Create2),
++        }
++    }
++}
++
++impl Encodable for CreationMethod {
++    fn rlp_append(&self, s: &mut RlpStream) {
++        let v = match *self {
++            CreationMethod::Create => 0u32,
++            CreationMethod::Create2 => 1,
++        };
++        Encodable::rlp_append(&v, s);
++    }
++}
++
++impl Decodable for CreationMethod {
++    fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
++        rlp.as_val().and_then(|v| Ok(match v {
++            0u32 => CreationMethod::Create,
++            1 => CreationMethod::Create2,
++            _ => return Err(DecoderError::Custom("Invalid value of CreationMethod item")),
++        }))
++    }
++}
++
+ /// Description of a _call_ action, either a `CALL` operation or a message transaction.
+ #[derive(Debug, Clone, PartialEq, RlpEncodable, RlpDecodable)]
+ pub struct Call {
+@@ -65,19 +143,96 @@ pub struct Call {
+     /// The input data provided to the call.
+     pub input: Bytes,
+     /// The type of the call.
+-    pub call_type: CallType,
++    pub call_type: BackwardsCompatibleCallType,
++}
++
++/// This is essentially an `Option<CallType>`, but with a custom
++/// `rlp` en/de-coding which preserves backwards compatibility with
++/// the older encodings used in OpenEthereum versions < 2.7 and 2.7.0.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub struct BackwardsCompatibleCallType(pub Option<CallType>);
++
++impl From<Option<CallType>> for BackwardsCompatibleCallType {
++    fn from(option: Option<CallType>) -> Self {
++        BackwardsCompatibleCallType(option)
++    }
++}
++
++// Encoding is the same as `CallType_v2_6_x`.
++impl Encodable for BackwardsCompatibleCallType {
++    fn rlp_append(&self, s: &mut RlpStream) {
++        let v = match self.0 {
++            None => 0u32,
++            Some(CallType::Call) => 1,
++            Some(CallType::CallCode) => 2,
++            Some(CallType::DelegateCall) => 3,
++            Some(CallType::StaticCall) => 4,
++        };
++        Encodable::rlp_append(&v, s);
++    }
++}
++
++// Try to decode it as `CallType_v2_6_x` first, and then as `Option<CallType_v2_7_0>`.
++impl Decodable for BackwardsCompatibleCallType {
++    fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
++        if rlp.is_data() {
++            rlp.as_val().and_then(|v| Ok(match v {
++                0u32 => None,
++                1 => Some(CallType::Call),
++                2 => Some(CallType::CallCode),
++                3 => Some(CallType::DelegateCall),
++                4 => Some(CallType::StaticCall),
++                _ => return Err(DecoderError::Custom("Invalid value of CallType item")),
++            }.into()))
++        } else {
++            #[allow(non_camel_case_types)]
++            #[derive(Debug, Clone, Copy, PartialEq)]
++            enum CallType_v2_7_0 {
++                Call,
++                CallCode,
++                DelegateCall,
++                StaticCall,
++            }
++
++            impl Decodable for CallType_v2_7_0 {
++                fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
++                    rlp.as_val().and_then(|v| Ok(match v {
++                        0u32 => CallType_v2_7_0::Call,
++                        1 => CallType_v2_7_0::CallCode,
++                        2 => CallType_v2_7_0::DelegateCall,
++                        3 => CallType_v2_7_0::StaticCall,
++                        _ => return Err(DecoderError::Custom("Invalid value of CallType item")),
++                    }))
++                }
++            }
++
++            impl From<CallType_v2_7_0> for CallType {
++                fn from(old_call_type: CallType_v2_7_0) -> Self {
++                    match old_call_type {
++                        CallType_v2_7_0::Call => Self::Call,
++                        CallType_v2_7_0::CallCode => Self::CallCode,
++                        CallType_v2_7_0::DelegateCall => Self::DelegateCall,
++                        CallType_v2_7_0::StaticCall => Self::StaticCall,
++                    }
++                }
++            }
++
++            let optional: Option<CallType_v2_7_0> = Decodable::decode(rlp)?;
++            Ok(optional.map(Into::into).into())
++        }
++    }
+ }
+ 
+ impl From<ActionParams> for Call {
+     fn from(p: ActionParams) -> Self {
+         match p.call_type {
+-            CallType::DelegateCall | CallType::CallCode => Call {
++            ActionType::DelegateCall | ActionType::CallCode => Call {
+                 from: p.address,
+                 to: p.code_address,
+                 value: p.value.value(),
+                 gas: p.gas,
+                 input: p.data.unwrap_or_else(Vec::new),
+-                call_type: p.call_type,
++                call_type: CallType::try_from(p.call_type).ok().into(),
+             },
+             _ => Call {
+                 from: p.sender,
+@@ -85,7 +240,7 @@ impl From<ActionParams> for Call {
+                 value: p.value.value(),
+                 gas: p.gas,
+                 input: p.data.unwrap_or_else(Vec::new),
+-                call_type: p.call_type,
++                call_type: CallType::try_from(p.call_type).ok().into(),
+             },
+         }
+     }
+@@ -113,6 +268,9 @@ pub struct Create {
+     pub gas: U256,
+     /// The init code.
+     pub init: Bytes,
++    /// Creation method (CREATE vs CREATE2).
++    /// #[rlp(default)]
++    pub creation_method: Option<CreationMethod>,
+ }
+ 
+ impl From<ActionParams> for Create {
+@@ -122,6 +280,7 @@ impl From<ActionParams> for Create {
+             value: p.value.value(),
+             gas: p.gas,
+             init: p.code.map_or_else(Vec::new, |c| (*c).clone()),
++            creation_method: CreationMethod::try_from(p.call_type).ok().into(),
+         }
+     }
+ }
+@@ -432,3 +591,133 @@ pub struct VMTrace {
+     /// Thre is a 1:1 correspondance between these and a CALL/CREATE/CALLCODE/DELEGATECALL instruction.
+     pub subs: Vec<VMTrace>,
+ }
++
++#[cfg(test)]
++mod tests {
++    use rlp::{RlpStream, Encodable};
++    use rlp_derive::{RlpEncodable, RlpDecodable};
++    use super::{Address, Bytes, Call, CallType, Create, CreationMethod, U256};
++
++    #[test]
++    fn test_call_type_backwards_compatibility() {
++        // Call type in version < 2.7.
++        #[derive(Debug, Clone, PartialEq, RlpEncodable)]
++        struct OldCall {
++            from: Address,
++            to: Address,
++            value: U256,
++            gas: U256,
++            input: Bytes,
++            call_type: OldCallType,
++        }
++
++        // CallType type in version < 2.7.
++        #[allow(dead_code)]
++        #[derive(Debug, PartialEq, Clone)]
++        enum OldCallType {
++            None,
++            Call,
++            CallCode,
++            DelegateCall,
++            StaticCall,
++        }
++
++        // CallType rlp encoding in version < 2.7.
++        impl Encodable for OldCallType {
++            fn rlp_append(&self, s: &mut RlpStream) {
++                let v = match *self {
++                    OldCallType::None => 0u32,
++                    OldCallType::Call => 1,
++                    OldCallType::CallCode => 2,
++                    OldCallType::DelegateCall => 3,
++                    OldCallType::StaticCall => 4,
++                };
++                Encodable::rlp_append(&v, s);
++            }
++        }
++
++        let old_call = OldCall {
++            from: Address::from_low_u64_be(1),
++            to: Address::from_low_u64_be(2),
++            value: U256::from(3),
++            gas: U256::from(4),
++            input: vec![5],
++            call_type: OldCallType::DelegateCall,
++        };
++
++        let old_encoded = rlp::encode(&old_call);
++
++        let new_call = Call {
++            from: Address::from_low_u64_be(1),
++            to: Address::from_low_u64_be(2),
++            value: U256::from(3),
++            gas: U256::from(4),
++            input: vec![5],
++            call_type: Some(CallType::DelegateCall).into(),
++        };
++
++        // `old_call` should be deserialized successfully into `new_call`
++        assert_eq!(rlp::decode(&old_encoded), Ok(new_call.clone()));
++        // test a roundtrip with `Some` `call_type`
++        let new_encoded = rlp::encode(&new_call);
++        assert_eq!(rlp::decode(&new_encoded), Ok(new_call));
++
++        // test a roundtrip with `None` `call_type`
++        let none_call = Call {
++            from: Address::from_low_u64_be(1),
++            to: Address::from_low_u64_be(2),
++            value: U256::from(3),
++            gas: U256::from(4),
++            input: vec![5],
++            call_type: None.into(),
++        };
++        let none_encoded = rlp::encode(&none_call);
++        assert_eq!(rlp::decode(&none_encoded), Ok(none_call));
++    }
++
++
++    #[test]
++    fn test_creation_method_backwards_compatibility() {
++        // Create type in version < 2.7.
++        #[derive(Debug, Clone, PartialEq, RlpEncodable, RlpDecodable)]
++        struct OldCreate {
++            from: Address,
++            value: U256,
++            gas: U256,
++            init: Bytes,
++        }
++
++        let old_create = OldCreate {
++            from: Address::from_low_u64_be(1),
++            value: U256::from(3),
++            gas: U256::from(4),
++            init: vec![5],
++        };
++
++        let old_encoded = rlp::encode(&old_create);
++        let new_create = Create {
++            from: Address::from_low_u64_be(1),
++            value: U256::from(3),
++            gas: U256::from(4),
++            init: vec![5],
++            creation_method: None,
++        };
++
++        // `old_create` should be deserialized successfully into `new_create`
++        assert_eq!(rlp::decode(&old_encoded), Ok(new_create.clone()));
++        // test a roundtrip with `None` `creation_method`
++        let new_encoded = rlp::encode(&new_create);
++        assert_eq!(rlp::decode(&new_encoded), Ok(new_create));
++
++        // test a roundtrip with `Some` `creation_method`
++        let some_create = Create {
++            from: Address::from_low_u64_be(1),
++            value: U256::from(3),
++            gas: U256::from(4),
++            init: vec![5],
++            creation_method: Some(CreationMethod::Create2),
++        };
++        let some_encoded = rlp::encode(&some_create);
++        assert_eq!(rlp::decode(&some_encoded), Ok(some_create));
++    }
++}
+diff --git a/crates/rpc/src/v1/tests/mocked/traces.rs b/crates/rpc/src/v1/tests/mocked/traces.rs
+index f9363da5b..c4bf3b8e7 100644
+--- a/crates/rpc/src/v1/tests/mocked/traces.rs
++++ b/crates/rpc/src/v1/tests/mocked/traces.rs
+@@ -20,14 +20,12 @@ use ethcore::{
+     client::TestBlockChainClient,
+     executed::{CallError, Executed},
+     trace::{
+-        trace::{Action, Call, Res},
++        trace::{Action, Call, Res, CallType},
+         LocalizedTrace,
+     },
+ };
+ use ethereum_types::{Address, H256};
+ 
+-use vm::CallType;
+-
+ use jsonrpc_core::IoHandler;
+ use v1::{tests::helpers::TestMinerService, Metadata, Traces, TracesClient};
+ 
+@@ -46,7 +44,7 @@ fn io() -> Tester {
+             value: 0x1.into(),
+             gas: 0x100.into(),
+             input: vec![1, 2, 3],
+-            call_type: CallType::Call,
++            call_type: Some(CallType::Call).into(),
+         }),
+         result: Res::None,
+         subtraces: 0,
+diff --git a/crates/rpc/src/v1/types/trace.rs b/crates/rpc/src/v1/types/trace.rs
+index 7e055c542..17d173edf 100644
+--- a/crates/rpc/src/v1/types/trace.rs
++++ b/crates/rpc/src/v1/types/trace.rs
+@@ -24,7 +24,6 @@ use ethcore::{
+ use ethereum_types::{H160, H256, U256};
+ use serde::{ser::SerializeStruct, Serialize, Serializer};
+ use types::{account_diff, state_diff};
+-use vm;
+ 
+ use v1::types::Bytes;
+ 
+@@ -236,6 +235,7 @@ impl From<state_diff::StateDiff> for StateDiff {
+ 
+ /// Create response
+ #[derive(Debug, Serialize)]
++#[serde(rename_all = "camelCase")]
+ pub struct Create {
+     /// Sender
+     from: H160,
+@@ -245,6 +245,9 @@ pub struct Create {
+     gas: U256,
+     /// Initialization code
+     init: Bytes,
++    // Create Type
++    #[serde(skip_serializing_if="Option::is_none")]
++    creation_method: Option<CreationMethod>,
+ }
+ 
+ impl From<trace::Create> for Create {
+@@ -254,6 +257,7 @@ impl From<trace::Create> for Create {
+             value: c.value,
+             gas: c.gas,
+             init: Bytes::new(c.init),
++            creation_method: c.creation_method.map(|c| c.into()),
+         }
+     }
+ }
+@@ -262,8 +266,6 @@ impl From<trace::Create> for Create {
+ #[derive(Debug, Serialize)]
+ #[serde(rename_all = "lowercase")]
+ pub enum CallType {
+-    /// None
+-    None,
+     /// Call
+     Call,
+     /// Call code
+@@ -274,14 +276,32 @@ pub enum CallType {
+     StaticCall,
+ }
+ 
+-impl From<vm::CallType> for CallType {
+-    fn from(c: vm::CallType) -> Self {
++impl From<trace::CallType> for CallType {
++    fn from(c: trace::CallType) -> Self {
++        match c {
++            trace::CallType::Call => CallType::Call,
++            trace::CallType::CallCode => CallType::CallCode,
++            trace::CallType::DelegateCall => CallType::DelegateCall,
++            trace::CallType::StaticCall => CallType::StaticCall,
++        }
++    }
++}
++
++/// Create type.
++#[derive(Debug, Serialize)]
++#[serde(rename_all = "lowercase")]
++pub enum CreationMethod {
++    /// Create
++    Create,
++    /// Create2
++    Create2,
++}
++
++impl From<trace::CreationMethod> for CreationMethod {
++    fn from(c: trace::CreationMethod) -> Self {
+         match c {
+-            vm::CallType::None => CallType::None,
+-            vm::CallType::Call => CallType::Call,
+-            vm::CallType::CallCode => CallType::CallCode,
+-            vm::CallType::DelegateCall => CallType::DelegateCall,
+-            vm::CallType::StaticCall => CallType::StaticCall,
++            trace::CreationMethod::Create => CreationMethod::Create,
++            trace::CreationMethod::Create2 => CreationMethod::Create2,
+         }
+     }
+ }
+@@ -301,18 +321,19 @@ pub struct Call {
+     /// Input data
+     input: Bytes,
+     /// The type of the call.
+-    call_type: CallType,
++    call_type: Option<CallType>,
+ }
+ 
+ impl From<trace::Call> for Call {
+     fn from(c: trace::Call) -> Self {
++        let optional: Option<trace::CallType> = c.call_type.0;
+         Call {
+             from: c.from,
+             to: c.to,
+             value: c.value,
+             gas: c.gas,
+             input: c.input.into(),
+-            call_type: c.call_type.into(),
++            call_type: optional.map(|c| c.into()),
+         }
+     }
+ }
+@@ -429,7 +450,7 @@ impl From<trace::CallResult> for CallResult {
+     }
+ }
+ 
+-/// Craete Result
++/// Create Result
+ #[derive(Debug, Serialize)]
+ #[serde(rename_all = "camelCase")]
+ pub struct CreateResult {
+@@ -708,7 +729,7 @@ mod tests {
+                 value: 6.into(),
+                 gas: 7.into(),
+                 input: Bytes::new(vec![0x12, 0x34]),
+-                call_type: CallType::Call,
++                call_type: Some(CallType::Call),
+             }),
+             result: Res::Call(CallResult {
+                 gas_used: 8.into(),
+@@ -737,7 +758,7 @@ mod tests {
+                 value: 6.into(),
+                 gas: 7.into(),
+                 input: Bytes::new(vec![0x12, 0x34]),
+-                call_type: CallType::Call,
++                call_type: Some(CallType::Call),
+             }),
+             result: Res::FailedCall(TraceError::OutOfGas),
+             trace_address: vec![10],
+@@ -762,6 +783,7 @@ mod tests {
+                 value: 6.into(),
+                 gas: 7.into(),
+                 init: Bytes::new(vec![0x12, 0x34]),
++                creation_method: Some(CreationMethod::Create).into(),
+             }),
+             result: Res::Create(CreateResult {
+                 gas_used: 8.into(),
+@@ -778,7 +800,7 @@ mod tests {
+         let serialized = serde_json::to_string(&t).unwrap();
+         assert_eq!(
+             serialized,
+-            r#"{"type":"create","action":{"from":"0x0000000000000000000000000000000000000004","value":"0x6","gas":"0x7","init":"0x1234"},"result":{"gasUsed":"0x8","code":"0x5678","address":"0x00000000000000000000000000000000000000ff"},"traceAddress":[10],"subtraces":1,"transactionPosition":11,"transactionHash":"0x000000000000000000000000000000000000000000000000000000000000000c","blockNumber":13,"blockHash":"0x000000000000000000000000000000000000000000000000000000000000000e"}"#
++            r#"{"type":"create","action":{"from":"0x0000000000000000000000000000000000000004","value":"0x6","gas":"0x7","init":"0x1234","creationMethod":"create"},"result":{"gasUsed":"0x8","code":"0x5678","address":"0x00000000000000000000000000000000000000ff"},"traceAddress":[10],"subtraces":1,"transactionPosition":11,"transactionHash":"0x000000000000000000000000000000000000000000000000000000000000000c","blockNumber":13,"blockHash":"0x000000000000000000000000000000000000000000000000000000000000000e"}"#
+         );
+     }
+ 
+@@ -790,6 +812,7 @@ mod tests {
+                 value: 6.into(),
+                 gas: 7.into(),
+                 init: Bytes::new(vec![0x12, 0x34]),
++                creation_method: Some(CreationMethod::Create).into(),
+             }),
+             result: Res::FailedCreate(TraceError::OutOfGas),
+             trace_address: vec![10],
+@@ -802,7 +825,7 @@ mod tests {
+         let serialized = serde_json::to_string(&t).unwrap();
+         assert_eq!(
+             serialized,
+-            r#"{"type":"create","action":{"from":"0x0000000000000000000000000000000000000004","value":"0x6","gas":"0x7","init":"0x1234"},"error":"Out of gas","traceAddress":[10],"subtraces":1,"transactionPosition":11,"transactionHash":"0x000000000000000000000000000000000000000000000000000000000000000c","blockNumber":13,"blockHash":"0x000000000000000000000000000000000000000000000000000000000000000e"}"#
++            r#"{"type":"create","action":{"from":"0x0000000000000000000000000000000000000004","value":"0x6","gas":"0x7","init":"0x1234","creationMethod":"create"},"error":"Out of gas","traceAddress":[10],"subtraces":1,"transactionPosition":11,"transactionHash":"0x000000000000000000000000000000000000000000000000000000000000000c","blockNumber":13,"blockHash":"0x000000000000000000000000000000000000000000000000000000000000000e"}"#
+         );
+     }
+ 
+diff --git a/crates/util/EIP-712/src/eip712.rs b/crates/util/EIP-712/src/eip712.rs
+index 9c155d771..0677a2d77 100644
+--- a/crates/util/EIP-712/src/eip712.rs
++++ b/crates/util/EIP-712/src/eip712.rs
+@@ -30,9 +30,9 @@ lazy_static! {
+     static ref IDENT_REGEX: Regex = Regex::new(r"^[a-zA-Z_$][a-zA-Z_$0-9]*$").unwrap();
+ }
+ 
++#[derive(Deserialize, Serialize, Validate, Debug, Clone)]
+ #[serde(rename_all = "camelCase")]
+ #[serde(deny_unknown_fields)]
+-#[derive(Deserialize, Serialize, Validate, Debug, Clone)]
+ pub(crate) struct EIP712Domain {
+     pub(crate) name: String,
+     pub(crate) version: String,
+@@ -42,9 +42,9 @@ pub(crate) struct EIP712Domain {
+     pub(crate) salt: Option<H256>,
+ }
+ /// EIP-712 struct
++#[derive(Deserialize, Debug, Clone)]
+ #[serde(rename_all = "camelCase")]
+ #[serde(deny_unknown_fields)]
+-#[derive(Deserialize, Debug, Clone)]
+ pub struct EIP712 {
+     pub(crate) types: MessageTypes,
+     pub(crate) primary_type: String,
+diff --git a/crates/vm/evm/src/interpreter/mod.rs b/crates/vm/evm/src/interpreter/mod.rs
+index e1b1e22fa..0ca679ca6 100644
+--- a/crates/vm/evm/src/interpreter/mod.rs
++++ b/crates/vm/evm/src/interpreter/mod.rs
+@@ -30,7 +30,7 @@ use num_bigint::BigUint;
+ use std::{cmp, marker::PhantomData, mem, sync::Arc};
+ 
+ use vm::{
+-    self, ActionParams, ActionValue, CallType, ContractCreateResult, CreateContractAddress,
++    self, ActionParams, ActionValue, ActionType, ContractCreateResult, CreateContractAddress,
+     GasLeft, MessageCallResult, ParamsType, ReturnData, Schedule, TrapError, TrapKind,
+ };
+ 
+@@ -144,7 +144,7 @@ struct InterpreterParams {
+     /// Input data.
+     pub data: Option<Bytes>,
+     /// Type of call
+-    pub call_type: CallType,
++    pub call_type: ActionType,
+     /// Param types encoding
+     pub params_type: ParamsType,
+ }
+@@ -807,7 +807,7 @@ impl<Cost: CostType> Interpreter<Cost> {
+                             &self.params.address,
+                             &code_address,
+                             has_balance,
+-                            CallType::Call,
++                            ActionType::Call,
+                         )
+                     }
+                     instructions::CALLCODE => {
+@@ -817,25 +817,25 @@ impl<Cost: CostType> Interpreter<Cost> {
+                             &self.params.address,
+                             &self.params.address,
+                             has_balance,
+-                            CallType::CallCode,
++                            ActionType::CallCode,
+                         )
+                     }
+                     instructions::DELEGATECALL => (
+                         &self.params.sender,
+                         &self.params.address,
+                         true,
+-                        CallType::DelegateCall,
++                        ActionType::DelegateCall,
+                     ),
+                     instructions::STATICCALL => (
+                         &self.params.address,
+                         &code_address,
+                         true,
+-                        CallType::StaticCall,
++                        ActionType::StaticCall,
+                     ),
+-                    _ => panic!(format!(
++                    _ => panic!(
+                         "Unexpected instruction {:?} in CALL branch.",
+                         instruction
+-                    )),
++                    ),
+                 };
+ 
+                 // clear return data buffer before creating new call frame.
+diff --git a/crates/vm/evm/src/lib.rs b/crates/vm/evm/src/lib.rs
+index 66431fa3d..dca41437d 100644
+--- a/crates/vm/evm/src/lib.rs
++++ b/crates/vm/evm/src/lib.rs
+@@ -56,6 +56,6 @@ pub use self::{
+     vmtype::VMType,
+ };
+ pub use vm::{
+-    ActionParams, CallType, CleanDustMode, ContractCreateResult, CreateContractAddress, EnvInfo,
++    ActionParams, ActionType, CleanDustMode, ContractCreateResult, CreateContractAddress, EnvInfo,
+     Ext, GasLeft, MessageCallResult, ReturnData, Schedule,
+ };
+diff --git a/crates/vm/vm/src/action_params.rs b/crates/vm/vm/src/action_params.rs
+index f2076e6e0..19c283159 100644
+--- a/crates/vm/vm/src/action_params.rs
++++ b/crates/vm/vm/src/action_params.rs
+@@ -17,7 +17,7 @@
+ //! Evm input params.
+ use super::access_list::AccessList;
+ use bytes::Bytes;
+-use call_type::CallType;
++use action_type::ActionType;
+ use ethereum_types::{Address, H256, U256};
+ use ethjson;
+ use hash::{keccak, KECCAK_EMPTY};
+@@ -87,7 +87,7 @@ pub struct ActionParams {
+     /// Input data.
+     pub data: Option<Bytes>,
+     /// Type of call
+-    pub call_type: CallType,
++    pub call_type: ActionType,
+     /// Param types encoding
+     pub params_type: ParamsType,
+     /// Current access list
+@@ -108,7 +108,7 @@ impl Default for ActionParams {
+             value: ActionValue::Transfer(U256::zero()),
+             code: None,
+             data: None,
+-            call_type: CallType::None,
++            call_type: ActionType::Create,
+             params_type: ParamsType::Separate,
+             access_list: AccessList::default(),
+         }
+@@ -130,8 +130,8 @@ impl From<ethjson::vm::Transaction> for ActionParams {
+             gas_price: t.gas_price.into(),
+             value: ActionValue::Transfer(t.value.into()),
+             call_type: match address.is_zero() {
+-                true => CallType::None,
+-                false => CallType::Call,
++                true => ActionType::Create,
++                false => ActionType::Call,
+             }, // TODO @debris is this correct?
+             params_type: ParamsType::Separate,
+             access_list: AccessList::default(),
+diff --git a/crates/vm/vm/src/call_type.rs b/crates/vm/vm/src/action_type.rs
+similarity index 71%
+rename from crates/vm/vm/src/call_type.rs
+rename to crates/vm/vm/src/action_type.rs
+index b8dcf559f..1fe81ddab 100644
+--- a/crates/vm/vm/src/call_type.rs
++++ b/crates/vm/vm/src/action_type.rs
+@@ -20,9 +20,9 @@ use rlp::{Decodable, DecoderError, Encodable, Rlp, RlpStream};
+ 
+ /// The type of the call-like instruction.
+ #[derive(Debug, PartialEq, Clone)]
+-pub enum CallType {
+-    /// Not a CALL.
+-    None,
++pub enum ActionType {
++    /// CREATE.
++    Create,
+     /// CALL.
+     Call,
+     /// CALLCODE.
+@@ -31,31 +31,35 @@ pub enum CallType {
+     DelegateCall,
+     /// STATICCALL
+     StaticCall,
++    /// CREATE2.
++    Create2,
+ }
+ 
+-impl Encodable for CallType {
++impl Encodable for ActionType {
+     fn rlp_append(&self, s: &mut RlpStream) {
+         let v = match *self {
+-            CallType::None => 0u32,
+-            CallType::Call => 1,
+-            CallType::CallCode => 2,
+-            CallType::DelegateCall => 3,
+-            CallType::StaticCall => 4,
++            ActionType::Create => 0u32,
++            ActionType::Call => 1,
++            ActionType::CallCode => 2,
++            ActionType::DelegateCall => 3,
++            ActionType::StaticCall => 4,
++            ActionType::Create2 => 5,
+         };
+         Encodable::rlp_append(&v, s);
+     }
+ }
+ 
+-impl Decodable for CallType {
++impl Decodable for ActionType {
+     fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
+         rlp.as_val().and_then(|v| {
+             Ok(match v {
+-                0u32 => CallType::None,
+-                1 => CallType::Call,
+-                2 => CallType::CallCode,
+-                3 => CallType::DelegateCall,
+-                4 => CallType::StaticCall,
+-                _ => return Err(DecoderError::Custom("Invalid value of CallType item")),
++                0u32 => ActionType::Create,
++                1 => ActionType::Call,
++                2 => ActionType::CallCode,
++                3 => ActionType::DelegateCall,
++                4 => ActionType::StaticCall,
++                5 => ActionType::Create2,
++                _ => return Err(DecoderError::Custom("Invalid value of ActionType item")),
+             })
+         })
+     }
+@@ -63,12 +67,12 @@ impl Decodable for CallType {
+ 
+ #[cfg(test)]
+ mod tests {
+-    use super::CallType;
++    use super::ActionType;
+     use rlp::*;
+ 
+     #[test]
+     fn encode_call_type() {
+-        let ct = CallType::Call;
++        let ct = ActionType::Call;
+ 
+         let mut s = RlpStream::new_list(2);
+         s.append(&ct);
+@@ -80,9 +84,9 @@ mod tests {
+ 
+     #[test]
+     fn should_encode_and_decode_call_type() {
+-        let original = CallType::Call;
++        let original = ActionType::Call;
+         let encoded = encode(&original);
+-        let decoded = decode(&encoded).expect("failure decoding CallType");
++        let decoded = decode(&encoded).expect("failure decoding ActionType");
+         assert_eq!(original, decoded);
+     }
+ }
+diff --git a/crates/vm/vm/src/ext.rs b/crates/vm/vm/src/ext.rs
+index fccb42e78..79693b600 100644
+--- a/crates/vm/vm/src/ext.rs
++++ b/crates/vm/vm/src/ext.rs
+@@ -17,7 +17,7 @@
+ //! Interface for Evm externalities.
+ 
+ use bytes::Bytes;
+-use call_type::CallType;
++use action_type::ActionType;
+ use env_info::EnvInfo;
+ use error::{Result, TrapKind};
+ use ethereum_types::{Address, H256, U256};
+@@ -117,7 +117,7 @@ pub trait Ext {
+         value: Option<U256>,
+         data: &[u8],
+         code_address: &Address,
+-        call_type: CallType,
++        call_type: ActionType,
+         trap: bool,
+     ) -> ::std::result::Result<MessageCallResult, TrapKind>;
+ 
+diff --git a/crates/vm/vm/src/lib.rs b/crates/vm/vm/src/lib.rs
+index f662921c7..309e41c9b 100644
+--- a/crates/vm/vm/src/lib.rs
++++ b/crates/vm/vm/src/lib.rs
+@@ -25,7 +25,7 @@ extern crate rlp;
+ 
+ pub mod access_list;
+ mod action_params;
+-mod call_type;
++mod action_type;
+ mod env_info;
+ mod error;
+ mod ext;
+@@ -36,7 +36,7 @@ pub mod tests;
+ 
+ pub use access_list::AccessList;
+ pub use action_params::{ActionParams, ActionValue, ParamsType};
+-pub use call_type::CallType;
++pub use action_type::ActionType;
+ pub use env_info::{EnvInfo, LastHashes};
+ pub use error::{Error, ExecTrapError, ExecTrapResult, Result, TrapError, TrapKind, TrapResult};
+ pub use ext::{ContractCreateResult, CreateContractAddress, Ext, MessageCallResult};
+diff --git a/crates/vm/vm/src/tests.rs b/crates/vm/vm/src/tests.rs
+index 34336da13..ca1721514 100644
+--- a/crates/vm/vm/src/tests.rs
++++ b/crates/vm/vm/src/tests.rs
+@@ -24,7 +24,7 @@ use bytes::Bytes;
+ use error::TrapKind;
+ use ethereum_types::{Address, H256, U256};
+ use hash::keccak;
+-use CallType;
++use ActionType;
+ use ContractCreateResult;
+ use CreateContractAddress;
+ use EnvInfo;
+@@ -241,7 +241,7 @@ impl Ext for FakeExt {
+         value: Option<U256>,
+         data: &[u8],
+         code_address: &Address,
+-        _call_type: CallType,
++        _call_type: ActionType,
+         _trap: bool,
+     ) -> ::std::result::Result<MessageCallResult, TrapKind> {
+         self.calls.insert(FakeCall {
+diff --git a/crates/vm/wasm/src/runtime.rs b/crates/vm/wasm/src/runtime.rs
+index b4de3f77c..7159a9c64 100644
+--- a/crates/vm/wasm/src/runtime.rs
++++ b/crates/vm/wasm/src/runtime.rs
+@@ -17,7 +17,7 @@
+ use super::panic_payload;
+ use ethereum_types::{Address, BigEndianHash, H256, U256};
+ use std::cmp;
+-use vm::{self, CallType};
++use vm::{self, ActionType};
+ use wasmi::{
+     self, Error as InterpreterError, MemoryRef, RuntimeArgs, RuntimeValue, Trap, TrapKind,
+ };
+@@ -401,7 +401,7 @@ impl<'a> Runtime<'a> {
+     fn do_call(
+         &mut self,
+         use_val: bool,
+-        call_type: CallType,
++        call_type: ActionType,
+         args: RuntimeArgs,
+     ) -> Result<RuntimeValue> {
+         trace!(target: "wasm", "runtime: CALL({:?})", call_type);
+@@ -470,11 +470,11 @@ impl<'a> Runtime<'a> {
+             .call(
+                 &gas.into(),
+                 match call_type {
+-                    CallType::DelegateCall => &self.context.sender,
++                    ActionType::DelegateCall => &self.context.sender,
+                     _ => &self.context.address,
+                 },
+                 match call_type {
+-                    CallType::Call | CallType::StaticCall => &address,
++                    ActionType::Call | ActionType::StaticCall => &address,
+                     _ => &self.context.address,
+                 },
+                 val,
+@@ -517,17 +517,17 @@ impl<'a> Runtime<'a> {
+ 
+     /// Message call
+     fn ccall(&mut self, args: RuntimeArgs) -> Result<RuntimeValue> {
+-        self.do_call(true, CallType::Call, args)
++        self.do_call(true, ActionType::Call, args)
+     }
+ 
+     /// Delegate call
+     fn dcall(&mut self, args: RuntimeArgs) -> Result<RuntimeValue> {
+-        self.do_call(false, CallType::DelegateCall, args)
++        self.do_call(false, ActionType::DelegateCall, args)
+     }
+ 
+     /// Static call
+     fn scall(&mut self, args: RuntimeArgs) -> Result<RuntimeValue> {
+-        self.do_call(false, CallType::StaticCall, args)
++        self.do_call(false, ActionType::StaticCall, args)
+     }
+ 
+     fn return_address_ptr(&mut self, ptr: u32, val: Address) -> Result<()> {
