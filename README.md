@@ -1,8 +1,8 @@
 # Modifications of the Ethereum client [OpenEthereum](https://github.com/openethereum/openethereum)
 
-## Distinuishing between `create` and `create2` messages in traces
+## Distinguishing between `create` and `create2` messages in traces
 
-Some time after the fork introducing the instruction `CREATE2`, Parity/OpenEthereum started to distinuish between `create` and `create2` messages in the RPC traces. However, shortly after the transition from Parity to OpenEthereum (OE), the developer team decided to revert to an old version of the project, to increase stability, and OE lost again the `create`/`create2` distinction in the traces. The patch `distinction-create-create2-in-traces.patch` reintroduces this ability to recent versions of OE.
+Some time after the fork introducing the instruction `CREATE2`, Parity/OpenEthereum started to distinguish between `create` and `create2` messages in the RPC traces. However, shortly after the transition from Parity to OpenEthereum (OE), the developer team decided to revert to an old version of the project, to increase stability, and OE lost again the `create`/`create2` distinction in the traces. The patch `distinction-create-create2-in-traces.patch` reintroduces this ability to recent versions of OE.
 
 After executing the following commands, the directory `openethereum` contains the patched version of OE.
 
@@ -15,3 +15,5 @@ git add crates/vm/vm/src/action_type.rs                       # renamed from cal
 git commit -a -m 'distinction create/create2 in traces'       # commit changes
 rm -rf ../patch                                               # remove patch
 ```
+
+Latest version tested: `OE v3.3.0-rc.8` with `rustc 1.51.0`
