@@ -16,4 +16,4 @@ git commit -a -m 'distinction create/create2 in traces'       # commit changes
 rm -rf ../patch                                               # remove patch
 ```
 
-Latest version tested: `OE v3.3.0-rc.12` with `rustc 1.51.0`
+Latest version tested: `OE v3.3.0-rc.15` with `rustc 1.51.0`
